@@ -1,0 +1,869 @@
+#include "main.h"
+
+
+  struct hostent *hp;
+  struct sockaddr_in ServerAddress;
+  int mainSocket;
+
+void	printUsage ( )
+{
+		printf( "--------------------------------------------------------------------------\n");
+		printf( "USAGE:\n");
+		printf( "list\t\t- show all active devices;\n");
+		printf( "print\t n\t- print \"n\" servo position;\n");		
+		printf( "moveto\t n  o\t- move \"n\" (1 to 6) servo to \"o\" mm;\n");
+		printf( "bank\t n  o\t- start programm for \"n\" servo in \"o\" bank.\n");
+		printf( "--------------------------------------------------------------------------\n\n");
+}
+
+
+
+void  writeIntInChar ( void * data,  int32_t value) {
+	int32_t * dat_int = (int32_t* ) data;
+	*dat_int  = value; 
+//	printf( "*dat_int = %d\n", *dat_int);
+ 
+return  ;
+}
+
+
+int TranspareMessage( unsigned char * in_byte, unsigned char * out_bytes, int size_in_message){
+	int total = 1;
+	int i , code_out =0;
+	for (i =0; i < size_in_message; i++)	{
+		code_out = TranspareByte (in_byte[i], &out_bytes[total]);
+		total += code_out;
+	}
+	out_bytes[0] = 0x01;
+	out_bytes[total++] = 0x03 ;
+//	printf("out_bytes[%d] = %.2X\n", total, out_bytes[total]);
+	return total;
+}
+
+int TranspareByte( unsigned char in_byte, unsigned char * out_bytes){
+	unsigned int t;
+	if ( (in_byte == 0x01) || (in_byte == 0x03) || (in_byte == 0x1A) ) 	{
+		out_bytes[0] = 0x1A;
+		out_bytes[1]=in_byte+0x40;
+		return 2;
+	}
+	out_bytes[0] = in_byte;
+
+	return 1;
+}
+
+
+void setX( char *data, int16_t value){
+	data[8] = (int8_t)(value >>8);
+	data[9] = (int8_t)(value); 
+}
+
+
+void printHex(char *data, int length){
+	int i ;
+	for ( i = 0; i<length ; i++)
+	{
+		printf("%.2X ", data[i] & 0xFF);
+	}
+	printf("\n");
+}
+
+
+int  ETH2CAN_send_toCAN(unsigned int canid, unsigned char com, unsigned char len, unsigned char* data, unsigned char * data_out){
+	unsigned char b[32];
+	int i, j;
+	unsigned char cr;
+	data_out[0] = TOCAN_ETH2CAN_PROTOCOL_CMD; //Протокол уровня CAN шлюза
+	if(canid>7) {
+		canid = 0x80000000 | (CAN_TRANSLATE_REQ_COM<<14) | (0<<7) |  (com << 0); 
+	}
+	else {
+
+		canid = 0x00000000 | (CAN_TRANSLATE_REQ_COM<<6) | (0<<3) | (com << 0); 
+	}
+
+
+	data_out[1] = canid;
+	data_out[2] = (canid>>8);
+
+	for(	i = 0; i < len; i++) 
+			data_out[3+i]=data[i]; //Технологический протокол привода
+	j = i+3;
+
+	cr=0;
+	for(i = 0 ; i < 6; i++) {
+		cr ^= data_out[i];
+	}
+	data_out[j]=cr; 
+j++;
+
+return j;
+} 
+
+int   	printPosition ( int  sph_number ){
+
+
+unsigned char message[100];
+unsigned char data_out[100];
+unsigned char question[] = {0x05, 0x07, 0x0A, 0x00, 0x00, 0x00, 0x00}; //  registor   Z  0x070A
+int 	size=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(question) ,  question, data_out) ;
+
+	int MESSAGE_DELIVERED = FALSE ;
+
+
+	int total  = TranspareMessage ( data_out, message, size);
+
+
+	server_connect();
+	send_message_ETH2CAN( message, total);
+
+
+
+  time_t  clock, cycleClock;
+  unsigned char TextBuffer[100];
+  unsigned char data[100];
+  
+  time( &clock );
+  while(1){
+		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 10) {
+  			printf("Error: message does not received!\n");
+	  		return ERROR ;
+		  }
+		int MessageSize = get_packet_from_ETH2CAN( TextBuffer, sizeof(TextBuffer) );		  
+//		int MessageSize = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0);
+		if(MessageSize>0) {	
+			int i;
+//			printf("MessageSize\t= ");
+//			printHex(	TextBuffer,	MessageSize	) ;
+						
+			i = RetranspareMessage ( TextBuffer, data, MessageSize);
+			
+			if (data[0] == FROMCAN_ETH2CAN_PROTOCOL_CMD) {
+				MESSAGE_DELIVERED = TRUE ;
+				break;
+				}
+		}
+		else if(MessageSize==-1)	{
+			perror("Can't call recv()!\n");
+			exit(ERROR);
+		}
+		else if(MessageSize==0)
+			exit(ERROR);
+	}
+
+	int32_t value = getPosition (data, 6);
+	printf("SERVOPRIVOD %d, CURRENT POSITION:  %d  mm\n",sph_number, value);
+	return SUCCESS;
+  }
+
+
+
+RET_CODE_ENUM RetranspareByte ( unsigned char in_byte, unsigned char *out_byte)
+{
+	RET_CODE_ENUM ret = NONE_BYTE_RECEIVED;
+	static struct ControlTranspare ReTranspareStruct;
+	/*
+	static int byte_position  = 0;
+	printf("byte position = %d\n", byte_position++);
+	printf("ReTranspareStruct.Type = %d\n", ReTranspareStruct.Type);
+	printf("ReTranspareStruct.Ctrl = %d\n", ReTranspareStruct.Ctrl);
+	printf("\n");
+	*/
+
+	switch (ReTranspareStruct.Type)
+	{
+	case RxBEGIN:
+		if (in_byte == 0x01) {
+			ReTranspareStruct.Type = RxDATA;
+			ReTranspareStruct.Ctrl = 0;
+			}
+		break;
+	case RxDATA:
+		switch (in_byte){
+			case 0x03:
+				ReTranspareStruct.Type = RxBEGIN;
+				ret = PACKET_RECEIVED;
+				// Пакет принят
+				break;
+			case 0x01:
+				ReTranspareStruct.Type = RxBEGIN;
+				break;
+			case 0x1A:
+				//Из следующего байта данных нужно будет вычесть 0x40
+				ReTranspareStruct.Ctrl = 1;
+				break;
+	
+			default:
+				if (ReTranspareStruct.Ctrl == 1) {
+				*out_byte = in_byte - 0x40;
+				ReTranspareStruct.Ctrl = 0;
+				ret = ONE_BYTE_RECEIVED;
+				}
+				else{
+					*out_byte = in_byte;
+					ret = ONE_BYTE_RECEIVED;
+					}
+		}
+		
+		break;
+	}
+	
+return ret;
+}
+
+
+
+void printRetro( unsigned char *data, int size )
+{
+	int i, j;
+	unsigned char text[200];
+	RET_CODE_ENUM ret;
+	unsigned char byte;
+	for (i =0 , j= 0;i <size; i++)
+	{
+		byte = data[i];
+		ret = RetranspareByte (byte, &text[j]) ;
+//		printf("%d)ret = %d\n", i, ret);
+		if (ret == ONE_BYTE_RECEIVED  )
+			j++;
+	}
+	
+	printf("before retro: ");
+	printHex(&(*data), size);
+	printf("after  retro: ");
+	printHex(text, j);
+	
+	
+return;
+}
+
+
+int RetranspareMessage (unsigned char *message_in, unsigned char *message_out, int message_in_size){
+	RET_CODE_ENUM ret;
+	int i ;
+	unsigned char byte;
+	int j ;
+	for (i =0 , j= 0;  i <message_in_size; i++) 	{
+		byte = message_in[i] ;
+		ret = RetranspareByte (message_in[i], &message_out[j])  ;
+//		printf("%d)ret = %d\n", i, ret);
+		if (ret == ONE_BYTE_RECEIVED  )
+				j++;
+
+	}
+return j ;
+}
+
+
+int32_t getValue ( void * data,  int bytePosition)
+{
+	int32_t * val;
+	val = (int32_t * )(&data[bytePosition]) ;
+	//printf("val = %d\n", *val);
+	int32_t ret = (*val) ;
+//	printf( "ret = %d\n", ret);
+	
+	return  ret ;
+}
+
+int32_t getPosition ( void * data,  int bytePosition)
+{
+	int32_t * val;
+	val = (int32_t * )(&data[bytePosition]) ;
+//	printf("val = %d\n", *val);
+	
+	int32_t ret = (*val) / 809;
+//	printf( "ret = %d\n", ret);
+	
+	return  ret ;
+}
+
+
+
+
+void server_connect()
+{
+  if((hp = gethostbyname(HOSTNAME))==0)	{
+	perror("Can't call gethostbyname()!\n");
+	exit(3);
+	}
+
+//  struct sockaddr_in ServerAddress;
+  bzero(&ServerAddress,sizeof(ServerAddress));
+  bcopy(hp->h_addr,&ServerAddress.sin_addr,hp->h_length);
+  ServerAddress.sin_family = hp->h_addrtype;
+  ServerAddress.sin_port = htons(PORT_NUMBER);
+
+  mainSocket = socket(AF_INET,SOCK_STREAM,0);
+  if(mainSocket==-1)	{
+	perror("Can't call socket()!\n");
+	exit(EXIT_FAILURE);
+	}
+
+  if(connect(mainSocket,(struct sockaddr *)&ServerAddress,sizeof(ServerAddress))==-1)	{
+	perror("Can't call connect() to !\n");
+	exit(EXIT_FAILURE);
+	}
+
+// printf("Client: OK\n");
+}
+
+
+void   send_message_ETH2CAN( unsigned char *message, int total)
+{
+
+  send(mainSocket, message,  total, 0);
+  
+}
+
+
+
+
+int  get_packet_from_ETH2CAN( unsigned char * buff, int buffSize )
+{
+	int size = recv(mainSocket, buff , buffSize,0);
+	return size ;
+}
+
+
+
+
+int  	move_privod(int sph_number, int destination)
+{
+
+	unsigned char change_up0[] = {	0x07, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00};
+	unsigned char code_move[] = {	0x11, 0xFF, 0xFF, 0x02, 0x00, 0x00, 0x00	};
+	unsigned char heartbeating[] = { 0x01, 0x05, 0x09 , 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03};
+
+	unsigned char data_out[100];
+	unsigned char message[100];
+	unsigned char answer[100];
+	writeIntInChar (&change_up0[3],  (( int32_t)destination*809) );
+
+//         1 message	change up0 registor
+	memset(data_out, 0, sizeof(data_out)) ;
+	memset(message, 0, sizeof(message) );	
+	int 	size=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(change_up0) ,  change_up0, data_out) ;
+	int MESSAGE_DELIVERED = FALSE ;
+	int total  = TranspareMessage ( data_out, message, size);
+
+
+	server_connect();
+	send_message_ETH2CAN( message, total);
+  
+//         2 message  start program in bank 2
+	memset(data_out, 0, sizeof(data_out)) ;
+	memset(message, 0, sizeof(message) );
+	size=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(code_move) ,  code_move, data_out) ;
+	total  = TranspareMessage ( data_out, message, size);
+	send_message_ETH2CAN( message, total);
+//	sleep(1);	
+	
+//			3	get servo status - registor Dd11
+	memset(data_out, 0, sizeof(data_out)) ;
+	unsigned char messageGetStatusDd11[100];
+	int totalSizeGetStatusDd11 = 0 ;
+	size = 0 ;
+	unsigned char servo_statusDd11[]= {  0x05, 0x04, 0x0F, 0x00, 0x00, 0x00, 0x00};	
+	size=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(servo_statusDd11) ,  servo_statusDd11, data_out) ;
+	totalSizeGetStatusDd11  = TranspareMessage ( data_out, messageGetStatusDd11, size);
+//	send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+
+
+// 			4 	get current speed - registor Dd4
+	memset(data_out, 0, sizeof(data_out)) ;
+	unsigned char currentSpeed_Dd4[] = {  0x05, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00};
+	unsigned char messageGetSpeedDd4[100];
+	int sizeDd4=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(currentSpeed_Dd4) ,  currentSpeed_Dd4, data_out) ;
+	int totalSizeDd4  = TranspareMessage ( data_out, messageGetSpeedDd4, sizeDd4);
+
+
+//	Lp11StatusInterpretatora
+	memset(data_out, 0, sizeof(data_out)) ;
+	unsigned char StatusInterpretatora_Lp11[] = {  0x05, 0x00, 0x42, 0x00, 0x00, 0x00, 0x00};
+	unsigned char messageGetStatusInterpretatora_Lp11[100];
+	int sizeLp11=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(StatusInterpretatora_Lp11) ,  StatusInterpretatora_Lp11, data_out) ;
+	int totalSizeLp11  = TranspareMessage ( data_out, messageGetStatusInterpretatora_Lp11, sizeLp11);
+
+
+	memset(data_out, 0, sizeof(data_out)) ;
+	unsigned char CurrentPosition_Dd7[] = {  0x05, 0x04, 0x0B, 0x00, 0x00, 0x00, 0x00};
+	unsigned char messageGetCurrentPosition_Dd7[100];
+	int sizeDd7=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(CurrentPosition_Dd7) ,  CurrentPosition_Dd7, data_out) ;
+	int totalSizeDd7  = TranspareMessage ( data_out, messageGetCurrentPosition_Dd7, sizeDd7);
+
+	
+unsigned char TextBuffer[100];
+unsigned char data_in[100];
+int32_t value  ;	
+time_t clock, cycleClock, endtime, starttime; 
+time(&clock);
+starttime = clock;
+int k = 0 ;
+int z = 0;
+int32_t speed ;
+		int MessageSize;
+		sleep(2);
+		int counter = 0;
+		
+		
+		
+//  check na zastrevanie		
+//printf("1) check na zastrevanie\n");
+		send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+	 while(1)
+	{
+ 		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 10) return ERROR;
+		if ( (MessageSize  = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0)  ) == 0 ){
+                    fprintf( stderr, "Failed receiving data.\n" );
+                    return(ERROR);
+                }	
+
+		if(MessageSize>0){
+			memset(data_in, 0, sizeof(data_in) ) ;	
+//			printf("Message:");
+//			printHex(TextBuffer, MessageSize);	
+			int i = RetranspareMessage ( TextBuffer, data_in, MessageSize);
+			if ( Dd11ServoStatus == getParametrAdress( data_in) ){
+				value = getValue (data_in, 6);
+				if (value == 0){
+//					printf("Break \n");
+					break;
+				}
+				else
+					return ERROR;
+			}
+					
+		}
+	
+	}		
+//------------		
+
+//  waiting while servo get to destination
+//printf("2) waiting while servo get to destination \n");
+time(&clock);
+	send_message_ETH2CAN ( messageGetSpeedDd4, totalSizeDd4  ) ;		
+  while(1)
+	{
+		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 20) return ERROR;
+
+		if ( (MessageSize  = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0)  ) == 0 ){
+                    fprintf( stderr, "Failed receiving data.\n" );
+                    return(ERROR);
+                }	
+		if(MessageSize>0)	  	{
+//			printf("Message\t\t= ");
+//			printHex( TextBuffer, MessageSize);
+			memset(data_in, 0, sizeof(data_in) ) ;		
+			int i = RetranspareMessage ( TextBuffer, data_in, MessageSize);
+			if (Dd4CurrentSpeed		== getParametrAdress( data_in) ){
+				speed = getValue (data_in, 6);
+				if (speed == 0 ){
+					counter++ ;
+				}
+				else counter = 0 ;
+				if (counter >=3)
+					break;
+			}
+			send_message_ETH2CAN ( messageGetSpeedDd4, totalSizeDd4  ) ;				
+		}                
+     }
+//-----------     
+     
+
+
+
+
+//  check for errors
+//printf("3) check for errors\n");
+	time(&clock);
+	send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+	 while(1)
+	{
+ 		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 8) 	send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+ 		if ( (cycleClock - clock) >= 10) return ERROR;
+		if ( (MessageSize  = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0)  ) == 0 ){
+                    fprintf( stderr, "Failed receiving data.\n" );
+                    return(ERROR);
+                }	
+		if(MessageSize>0){
+//			printf("Message:");
+//			printHex(TextBuffer, MessageSize);			
+			memset(data_in, 0, sizeof(data_in) ) ;		
+			int i = RetranspareMessage ( TextBuffer, data_in, MessageSize);
+			if ( Dd11ServoStatus == getParametrAdress( data_in) ){
+				value = getValue (data_in, 6);
+				if (value == 0)
+					break;
+				else{
+					printf("ERROR!!! Dd11ServoStatus: %d\n", value);
+					return ERROR;
+					}
+			}
+					
+		}
+	
+	}		
+//------------		
+
+	time (&endtime);
+//	printf("Success, alltime = %d\n", (endtime - starttime) ) ;
+return SUCCESS ;
+}
+
+
+
+int 	wait_for_answer_for_ETH2CAN ( unsigned char *answer , int aswerMaxSize )
+{
+	int result = ERROR;
+	time_t clock, cycleClock;
+	printf("Function  wait_for_answer_for_ETH2CAN(...)	START\n");
+	int k =0;
+	int step1 = 0;
+	int step2 = 0;
+	int messageSize = 0;
+	unsigned char dataout[100];
+	time( &clock );
+	
+	unsigned char TextBuffer[100];
+	
+  while(1)
+	{
+	int MessageSize = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0);
+	if(MessageSize>0)
+	  	{
+		printf("MessageSize:%c:  ",MessageSize);
+		int i;
+		for(i=0;i<MessageSize;i++)
+			printf("%.2X ",TextBuffer[i] & 0xFF);
+		printf("\n");
+		}
+	else if(MessageSize==-1)
+		{
+		perror("Can't call recv()!\n");
+		exit(EXIT_FAILURE);
+		}
+	else if(MessageSize==0)
+		exit(EXIT_SUCCESS);
+	}
+	
+  while(1){
+  		time( &cycleClock );
+  		if ( (cycleClock-clock) >= k){
+  			k++;
+  			printf(". ");
+  			}
+		if (cycleClock-clock > DEAD_TIME_WAITING ){
+  			printf("Error: ETH2CAN not responding\n");
+  			exit (ERROR);
+//	return ERROR; // return 0
+			}
+		messageSize = get_message_from_packet( dataout  ) ;
+		if (messageSize >0){
+			if ( dataout[0] != 0xFF) {
+				if (aswerMaxSize<=messageSize)	{
+						memcpy ( answer , dataout, messageSize);
+						return messageSize;
+					}
+				else
+  					exit (ERROR);
+  			//			return ERROR; // return 0
+				}
+			}
+		}
+}
+
+
+
+
+
+
+void   	printList(void )
+{
+
+	unsigned char dataout[100] ;
+
+	unsigned char datain[] = {0x01, 0x16, 0x47, 0x1A, 0x43, 0x05, 0x00, 0x35, 0xCC, 0x03} ;
+	
+	time_t  clock, cycleClock;
+	int SPH_base[7];
+	memset (SPH_base, 0, sizeof(SPH_base) );
+	int k =0;
+	int step1 = 0;
+	int step2 = 0;
+	int messageSize = 0;
+	
+	
+	server_connect();
+	send_message_ETH2CAN(datain, sizeof(datain) ) ;
+	time( &clock );
+	printf("Searching ");
+
+	
+  while(1){
+  		time( &cycleClock );
+  		if ( (cycleClock-clock) >= k){
+  			k++;
+  			printf(". ");
+  			}
+		if (cycleClock-clock > DEAD_TIME_WAITING ){
+  			printf("\n");
+			break;
+			}
+		messageSize = get_message_from_packet( dataout  ) ;
+		if (messageSize >0){
+			if ( dataout[0] != 0xFF) {
+				int canid = getCanId(dataout);
+				memset(dataout, '\0' , messageSize);
+				SPH_base[canid] = TRUE;
+				messageSize = 0;
+				}
+			//printf("SPH_base[%d] = TRUE;\n", canid);
+			}
+		}
+		printf("\n");
+
+	if (SPH_base[S3X] == TRUE )
+		printf("%s (com %d) IS AVAILABLE\n", ServoNames[S3X], S3X );
+	else
+		printf("%s (com %d) IS DISABLE\n", ServoNames[S3X], S3X);			
+
+	if (SPH_base[S3Y] == TRUE )
+		printf("%s (com %d) IS AVAILABLE\n", ServoNames[S3Y], S3Y);
+	else
+		printf("%s (com %d) IS DISABLE\n", ServoNames[S3Y], S3Y);			
+
+	if (SPH_base[K1X] == TRUE )
+		printf("%s (com %d) IS AVAILABLE\n", ServoNames[K1X], K1X);
+	else
+		printf("%s (com %d) IS DISABLE\n", ServoNames[K1X], K1X);			
+
+	if (SPH_base[K1Y] == TRUE )
+		printf("%s (com %d) IS AVAILABLE\n", ServoNames[K1Y], K1Y);
+	else
+		printf("%s (com %d) IS DISABLE\n", ServoNames[K1Y], K1Y);			
+
+	if (SPH_base[K2X] == TRUE )
+		printf("%s (com %d) IS AVAILABLE\n", ServoNames[K2X], K2X);
+	else
+		printf("%s (com %d) IS DISABLE\n", ServoNames[K2X], K2X);			
+
+	if (SPH_base[K2Y] == TRUE )
+		printf("%s (com %d) IS AVAILABLE\n", ServoNames[K2Y], K2Y);
+	else
+		printf("%s (com %d) IS DISABLE\n", ServoNames[K2Y], K2Y);			
+
+	
+}
+
+int	getCanId(void   *data)
+{
+	int  * num = (int *)(&data[6]);
+	int val = *num;
+//	printf("CanId = %d\n", val);
+	return val;
+}
+
+int get_message_from_packet( unsigned char * data) 
+{
+  time_t  clock, cycleClock;
+  unsigned char TextBuffer[100];
+    int size = 0;
+
+		int MessageSize = get_packet_from_ETH2CAN( TextBuffer, sizeof(TextBuffer) );		  
+
+		if(MessageSize>0) {		
+		size = RetranspareMessage ( TextBuffer, data, MessageSize);
+		return size ;	
+		if(MessageSize==-1)	{
+			printf("Can't call recv()!\n");
+			return ERROR ;
+		}
+		}
+		if(MessageSize==0)
+		return 0;
+}
+
+uint16_t getParametrAdress( void * data_in)
+{	
+	uint16_t* num ;
+	num = (uint16_t*)(&data_in[4]);
+	uint16_t ret = *num;
+//	printf("getParametrAdress: ");
+//	printHex (&ret, 2);
+	return ret ;
+}
+
+
+
+
+
+
+
+int  executeProgramInBank(int  sph_number, int bank_number )
+{
+
+	unsigned char code_move[] = {	0x11, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00	};
+	writeIntInChar (&code_move[3],  (( int32_t)bank_number) );
+
+
+	unsigned char data_out[100];
+	unsigned char message_start_bank0[100];
+
+	int total, size;
+	server_connect();
+  
+//         2 message  start program in bank 1
+	memset(data_out, 0, sizeof(data_out)) ;
+	memset(message_start_bank0, 0, sizeof(message_start_bank0) );
+	size=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(code_move) ,  code_move, data_out) ;
+	total  = TranspareMessage ( data_out, message_start_bank0, size);
+	send_message_ETH2CAN( message_start_bank0, total);
+//	sleep(1);	
+	
+//			3	get servo status - registor Dd11
+	memset(data_out, 0, sizeof(data_out)) ;
+	unsigned char messageGetStatusDd11[100];
+	int totalSizeGetStatusDd11 = 0 ;
+	size = 0 ;
+	unsigned char servo_statusDd11[]= {  0x05, 0x04, 0x0F, 0x00, 0x00, 0x00, 0x00};	
+	size=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(servo_statusDd11) ,  servo_statusDd11, data_out) ;
+	totalSizeGetStatusDd11  = TranspareMessage ( data_out, messageGetStatusDd11, size);
+//	send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+
+
+// 			4 	get current speed - registor Dd4
+	memset(data_out, 0, sizeof(data_out)) ;
+	unsigned char currentSpeed_Dd4[] = {  0x05, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00};
+	unsigned char messageGetSpeedDd4[100];
+	int sizeDd4=   ETH2CAN_send_toCAN( 0 , sph_number , sizeof(currentSpeed_Dd4) ,  currentSpeed_Dd4, data_out) ;
+	int totalSizeDd4  = TranspareMessage ( data_out, messageGetSpeedDd4, sizeDd4);
+
+
+
+	
+unsigned char TextBuffer[100];
+unsigned char data_in[100];
+int32_t value  ;	
+time_t clock, cycleClock, endtime, starttime; 
+time(&clock);
+starttime = clock;
+int k = 0 ;
+int z = 0;
+int32_t speed ;
+		int MessageSize;
+		sleep(2);
+		int counter = 0;
+		
+		
+		
+//  check na zastrevanie		
+//printf("1) check na zastrevanie\n");
+		send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+	 while(1)
+	{
+ 		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 10) return ERROR;
+		if ( (MessageSize  = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0)  ) == 0 ){
+                    fprintf( stderr, "Failed receiving data.\n" );
+                    return(ERROR);
+                }	
+
+		if(MessageSize>0){
+			memset(data_in, 0, sizeof(data_in) ) ;	
+//			printf("Message:");
+//			printHex(TextBuffer, MessageSize);	
+			int i = RetranspareMessage ( TextBuffer, data_in, MessageSize);
+			if ( Dd11ServoStatus == getParametrAdress( data_in) ){
+				value = getValue (data_in, 6);
+				if (value == 0){
+//					printf("Break \n");
+					break;
+				}
+				else
+					return ERROR;
+			}
+					
+		}
+	
+	}		
+//------------		
+
+//  waiting while servo get to destination
+//printf("2) waiting while servo get to destination \n");
+time(&clock);
+	send_message_ETH2CAN ( messageGetSpeedDd4, totalSizeDd4  ) ;		
+  while(1)
+	{
+		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 20) return ERROR;
+
+		if ( (MessageSize  = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0)  ) == 0 ){
+                    fprintf( stderr, "Failed receiving data.\n" );
+                    return(ERROR);
+                }	
+		if(MessageSize>0)	  	{
+//			printf("Message\t\t= ");
+//			printHex( TextBuffer, MessageSize);
+			memset(data_in, 0, sizeof(data_in) ) ;		
+			int i = RetranspareMessage ( TextBuffer, data_in, MessageSize);
+			if (Dd4CurrentSpeed		== getParametrAdress( data_in) ){
+				speed = getValue (data_in, 6);
+				if (speed == 0 ){
+					counter++ ;
+				}
+				else counter = 0 ;
+				if (counter >=3)
+					break;
+			}
+			send_message_ETH2CAN ( messageGetSpeedDd4, totalSizeDd4  ) ;				
+		}                
+     }
+//-----------     
+     
+
+
+
+
+//  check for errors
+//printf("3) check for errors\n");
+	time(&clock);
+	send_message_ETH2CAN( messageGetStatusDd11, totalSizeGetStatusDd11);
+	 while(1)
+	{
+ 		time(&cycleClock);
+ 		if ( (cycleClock - clock) >= 10) return ERROR;
+		if ( (MessageSize  = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0)  ) == 0 ){
+                    fprintf( stderr, "Failed receiving data.\n" );
+                    return(ERROR);
+                }	
+		if(MessageSize>0){
+//			printf("Message:");
+//			printHex(TextBuffer, MessageSize);			
+			memset(data_in, 0, sizeof(data_in) ) ;		
+			int i = RetranspareMessage ( TextBuffer, data_in, MessageSize);
+			if ( Dd11ServoStatus == getParametrAdress( data_in) ){
+				value = getValue (data_in, 6);
+				if (value == 0)
+					break;
+				else{
+					printf("ERROR!!! Dd11ServoStatus: %d\n", value);
+					return ERROR;
+					}
+			}
+					
+		}
+	
+	}		
+//------------		
+
+	time (&endtime);
+//	printf("Success, alltime = %d\n", (endtime - starttime) ) ;
+return SUCCESS ;
+
+
+}

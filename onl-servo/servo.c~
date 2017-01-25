@@ -1,0 +1,208 @@
+#include "main.h"
+
+int  main(int ac,char** av)
+{
+
+	struct hostent *hp;
+	int sph_number, destination;
+   
+	setvbuf(stdout, 0, _IONBF ,0);  					    
+  
+
+if (ac <2) {
+	printUsage();
+	return 1; 
+	}
+
+int a;
+	int rezult;
+
+//		PRINT	
+if ( strcmp(av[1], "print") == 0) {
+	if(ac != 3) {
+		printUsage ( );
+		return ERROR;
+	}	
+ 	sph_number = atoi(av[2]);
+  	if (sph_number <1 || sph_number >6 )	{  	     
+  		printf("Error: sph number must be  1, 2, 3, 4, 5 or 6\n");
+  		printUsage ( );
+		return ERROR;
+  	} 	  	
+  	printPosition ( sph_number );
+		return SUCCESS;
+}
+
+//		MOVETO
+else if ( strcmp (av[1], "moveto") == 0 )
+{
+	if(ac != 4) {
+		printUsage ( );
+		return ERROR;
+	}
+  	sph_number = atoi(av[2]);
+  	destination = atoi(av[3]);
+  	if (destination  < 0 )	{
+  	     printUsage ( );
+		return ERROR;
+  	}
+  	else{
+		rezult =  	move_privod(sph_number, destination);
+		if (rezult == ERROR){
+			printf("ERROR while moving servoprivod %d on %d mm\n", sph_number, destination);
+			return ERROR ;
+		}		
+		printf("SUCCESS! SERVOPRIVOD %d, POSITION: %d\n", sph_number, destination);
+	  	return SUCCESS;
+  	}
+}
+
+//		LIST
+else if ( strcmp (av[1], "list") == 0 ){
+  	// make magic
+	  	printList();
+		return SUCCESS;
+		}
+		
+//		BANK		
+else if (strcmp (av[1], "bank") == 0 ){
+	if(ac != 4) 	{
+		printUsage ( );
+		return ERROR;
+	}
+  	sph_number = atoi(av[2]);
+  	int bank_number = atoi(av[3]);
+  	if (bank_number  < 0 || bank_number >7)	{
+  	     printUsage ( );
+		return ERROR;
+  	}
+  	rezult = executeProgramInBank( sph_number, bank_number );
+  	if ( rezult == ERROR){
+  		printf("ERROR while executing programm in bank %d  for %d  servoprivod\n", bank_number, sph_number) ;
+  		return ERROR;
+  	}
+  	else{
+  		printf("SUCCESS! SERVOPRIVOD %d, PROGRAMM IN %d BANK IS EXECUTED\n", sph_number, bank_number);  	
+	  	return SUCCESS;
+	  	}
+}
+
+
+else 
+{
+		printUsage ( );
+		return  ERROR;
+}
+
+//--------------------------------------  end  --------------------
+
+printf("dest= %d\n", destination);
+
+	char text [100] ;
+	char TextBuffer[100];
+
+
+
+sleep (5);
+
+
+
+  if((hp = gethostbyname(HOSTNAME))==0)
+	{
+	perror("Can't call gethostbyname()!\n");
+	exit(3);
+	}
+
+
+
+  struct sockaddr_in ServerAddress;
+  bzero(&ServerAddress,sizeof(ServerAddress));
+  bcopy(hp->h_addr,&ServerAddress.sin_addr,hp->h_length);
+  ServerAddress.sin_family = hp->h_addrtype;
+  ServerAddress.sin_port = htons(PORT_NUMBER);
+
+  int mainSocket = socket(AF_INET,SOCK_STREAM,0);
+  if(mainSocket==-1)
+	{
+	perror("Can't call socket()!\n");
+	exit(EXIT_FAILURE);
+	}
+
+  if(connect(mainSocket,(struct sockaddr *)&ServerAddress,sizeof(ServerAddress))==-1)
+	{
+	perror("Can't call connect() to !\n");
+	exit(EXIT_FAILURE);
+	}
+
+  printf("Client: OK\n");
+
+
+unsigned char data_out[100]; 
+	
+int com , id ;
+unsigned char mess_out[100] ;
+int total;
+int size;
+int quit_flag = 0; 
+
+// write to up0  destination_value
+unsigned char data_in[] = {0x07, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00};
+writeIntInChar (&data_in[3],  (( int32_t)destination*809) );
+
+id =0 ;
+com = 5;//  sph_number;
+
+	size=   ETH2CAN_send_toCAN( id, com , sizeof(data_in) ,  data_in, data_out) ;
+	printf("%d)-id  %d)-com    data_in[]\t= ", id , com);
+	printHex(data_in, sizeof(data_in));
+	printf("data_out[]\t\t\t= ");
+	printHex(data_out, size);	
+	total  = TranspareMessage ( data_out, mess_out, size);
+	printf("TranspareMessage\t\t= ");
+	printHex(mess_out, total); 
+
+	printf("Sending message to tcp2can...\n");
+	 send(mainSocket, mess_out,  total, 0);
+	 usleep(1000);
+
+	memset( data_out, '\0', sizeof(data_out) ); 
+	memset( mess_out, '\0', sizeof(mess_out) );
+	unsigned char code_move[] = {0x11, 0xFF, 0xFF, 0x02, 0x00, 0x00, 0x00};
+//	unsigned char code_ReadZ[] = {0x05, 0x07, 0x0A, 0x00, 0x00, 0x00, 0x00};						
+	size=   ETH2CAN_send_toCAN( id, com , sizeof(code_move) , code_move, data_out) ;
+//	size=   ETH2CAN_send_toCAN( id, com , sizeof(code_ReadZ) , code_ReadZ, data_out) ;
+	printf("data_out[]\t\t\t= ");
+	printHex(data_out, size);	
+	total  = TranspareMessage ( data_out, mess_out, size);
+	printf("TranspareMessage\t\t= ");
+	printHex(mess_out, total); 
+
+	printf("Sending message to tcp2can...\n");
+  send(mainSocket, mess_out,  total, 0);
+//  usleep(500);
+//  send(mainSocket,startMove, sizeof(startMove),0);
+  
+
+  while(1)
+	{
+	int MessageSize = recv(mainSocket,TextBuffer,sizeof(TextBuffer),0);
+	if(MessageSize>0)
+	  	{
+		printf("MessageSize:%c:  ",MessageSize);
+		int i;
+		for(i=0;i<MessageSize;i++)
+			printf("%.2X ",TextBuffer[i] & 0xFF);
+		printf("\n");
+		}
+	else if(MessageSize==-1)
+		{
+		perror("Can't call recv()!\n");
+		exit(EXIT_FAILURE);
+		}
+	else if(MessageSize==0)
+		exit(EXIT_SUCCESS);
+	}
+
+  return 0;
+}
+
