@@ -12,11 +12,15 @@ void	printUsage ( )
 		printf( "list\t\t\t- show all active devices;\n");
 		printf( "print\t\t n\t- print \"n\" servo position;\n");		
 		printf( "moveto\t\t n  o\t- move \"n\" (1 to 6) servo to \"o\" mm;\n");
+		printf( "com_moveto\t n  o\t- move device on COMPORT \"n\" (1 to 6) to \"o\" mm;\n");
 		//printf( "com_moveto\t n  o\t- move device on COMPORT \"n\" (1 to 6) to \"o\" mm;\n");
 		printf( "bank\t\t n  o\t- start programm for \"n\" servo in \"o\" bank.\n");
 		printf( "getid\t\t n\t- show factory ID for servo on this COMPORT\n");
 		printf( "--------------------------------------------------------------------------\n\n");
+		
 }
+
+
 
 
 
@@ -1164,6 +1168,13 @@ void setDefaultParameters ( servosInSystem * allServo )
 }
 */
 
+
+void doNothing(void)
+{
+	printf("This function do nothing.\n");
+
+	return;
+}
 
 
 

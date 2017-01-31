@@ -222,5 +222,5 @@ id_type getIDforThisMassive( unsigned char * data);
 int findCompPortForThisDevice( id_type factoryID );	
 void setDefaultParameters ( servosInSystem * allServo );
 
-
+void doNothing(void);
 
